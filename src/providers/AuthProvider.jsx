@@ -1,3 +1,4 @@
+// src/providers/AuthProvider.jsx
 import {
   createUserWithEmailAndPassword,
   deleteUser,
@@ -17,21 +18,24 @@ export const AuthContext = createContext();
 
 const AuthProvider = ({ children }) => {
   const auth = getAuth(app);
-  const [user, setUser] = useState({});
+  const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const axiosPublic = useAxiosPublic();
 
+  // ------------------ Auth Actions ------------------
   const createUser = (email, password) => {
+    setLoading(true);
     return createUserWithEmailAndPassword(auth, email, password);
   };
 
   const signIn = (email, password) => {
+    setLoading(true);
     return signInWithEmailAndPassword(auth, email, password);
   };
 
   const googleProvider = new GoogleAuthProvider();
-
   const googleSignIn = () => {
+    setLoading(true);
     return signInWithPopup(auth, googleProvider);
   };
 
@@ -44,34 +48,51 @@ const AuthProvider = ({ children }) => {
   };
 
   const logOut = () => {
+    setLoading(true);
+    localStorage.removeItem("access-token"); // remove token when logging out
     return signOut(auth);
   };
 
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      // console.log("🚀 ~ unsubscribe ~ currentUser:", currentUser);
-            setUser(currentUser);
+useEffect(() => {
+  const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+    console.log('server running:',import.meta.env.VITE_SERVER_URL);
 
-      if (currentUser) {
-        axiosPublic
-          .post("/add-user", {
-            email: currentUser.email,
-            role: "donor",
-            // status: "active",
-            loginCount: 1,
-          })
-          .then((res) => {
-            // console.log('this is axios', res.data, currentUser.email);
-          });
+    if (currentUser) {
+      const token = await currentUser.getIdToken(); // Firebase ID token
+      localStorage.setItem("access-token", token);
+
+      try {
+        // 🔑 Sync with backend
+        const { data } = await axiosPublic.get("/api/v1/auth/me", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        // Store both Firebase & backend user info
+        setUser({
+          ...currentUser,
+          accessToken: token,
+          role: data.user.role,
+          status: data.user.status,
+          loginCount: data.user.loginCount,
+        });
+
+        // console.log("✅ Synced user:", data.user);
+      } catch (err) {
+        console.error("Auth sync error:", err);
+        setUser(null);
       }
+    } else {
+      localStorage.removeItem("access-token");
+      setUser(null);
+    }
+    setLoading(false);
+  });
 
-      setLoading(false);
-    });
-    return () => {
-      unsubscribe();
-    };
-  }, []);
+  return () => unsubscribe();
+}, []);
 
+
+  // ------------------ Context Value ------------------
   const authInfo = {
     user,
     loading,

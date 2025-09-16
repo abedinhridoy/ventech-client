@@ -1,7 +1,7 @@
 import { useContext } from "react";
 import { Navigate, useLocation } from "react-router";
 import { AuthContext } from "@/providers/AuthProvider";
-import Loading from "@/pages/_fronted/home/Loading";
+import Loading from "@/components/shared/Loading";
 import Swal from "sweetalert2";
 
 const PrivateRoute = ({ children }) => {
@@ -17,7 +17,6 @@ const PrivateRoute = ({ children }) => {
     return children;
   }
 
-  Swal.fire("Error","You Must Login First","error")
   return <Navigate state={location.pathname} to="/login" replace></Navigate>;
 };
 

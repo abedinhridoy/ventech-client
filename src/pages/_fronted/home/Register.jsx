@@ -1,265 +1,490 @@
 import { useContext, useState } from "react";
-import Lottie from "lottie-react";
 import { useNavigate, Link } from "react-router";
-import { BiUser, BiEnvelope, BiKey, BiImageAdd, BiDroplet } from "react-icons/bi";
+import { BiUser, BiEnvelope, BiKey, BiStore, BiMap, BiCreditCard, BiPhone } from "react-icons/bi";
 import { FcGoogle } from "react-icons/fc";
-import happy from "@/assets/happy.json";
 import { motion } from "framer-motion";
 import { AuthContext } from "@/providers/AuthProvider";
 import useAxiosPublic from "@/hooks/axiosPublic";
 import Swal from "sweetalert2";
-import useDistrictUpazila from "@/hooks/useDistrictUpazila";
 
 const RegistrationPage = () => {
-  const { bloodGroups, districts, getUpazilasByDistrict } = useDistrictUpazila();
-
   const navigate = useNavigate();
-  const { createUser, updateUser, setUser, googleSignIn } = useContext(AuthContext);
+  const { createUser, updateUser, setUser, googleSignIn, user } = useContext(AuthContext);
   const axiosPublic = useAxiosPublic();
+
+  // Redirect if already logged in
+  if(user?.email){
+    navigate("/dashboard");
+    return null;
+  }
 
   const [form, setForm] = useState({
     name: "",
-    image: null,
     email: "",
+    phone: "",
     pass: "",
     confirmPass: "",
-    bloodGroup: "",
-    district: "",
-    upazila: "",
+    role: "customer", // default to customer
+    shopName: "",
+    shopNumber: "",
+    shopAddress: "",
+    tradeLicense: "",
     terms: false,
-    status: 'active',
   });
 
-  const [upazilaOptions, setUpazilaOptions] = useState([]);
-  const [avatarPreview, setAvatarPreview] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const validatePassword = (pass) =>
-    /[A-Z]/.test(pass) &&
-    /[a-z]/.test(pass) &&
-    /[0-9]/.test(pass) &&
-    /[^A-Za-z0-9]/.test(pass) &&
-    pass.length >= 6;
-
   const handleChange = (e) => {
-    const { name, value, type, checked, files } = e.target;
-
-    if (name === "district") {
-      setForm({ ...form, district: value, upazila: "" });
-      setUpazilaOptions(getUpazilasByDistrict(value));
-    } else if (name === "image") {
-      setForm({ ...form, image: files[0] });
-      setAvatarPreview(URL.createObjectURL(files[0]));
-    } else if (type === "checkbox") {
+    const { name, value, type, checked } = e.target;
+    if (type === "checkbox") {
       setForm({ ...form, [name]: checked });
     } else {
       setForm({ ...form, [name]: value });
     }
   };
 
-  const uploadImageToImgbb = async (imageFile) => {
-    const apiKey = "dff59569a81c30696775e74f040e20bb";
-    const formData = new FormData();
-    formData.append("image", imageFile);
+  const validatePassword = (pass) =>
+    /[A-Z]/.test(pass) && /[a-z]/.test(pass) && /[0-9]/.test(pass) && /[^A-Za-z0-9]/.test(pass) && pass.length >= 6;
 
-    const response = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, {
-      method: "POST",
-      body: formData,
+  const validateMerchantFields = () => {
+    if (form.role === "merchant") {
+      if (!form.shopName.trim()) {
+        setError("Shop name is required for merchants.");
+        return false;
+      }
+      if (!form.shopNumber.trim()) {
+        setError("Shop number is required for merchants.");
+        return false;
+      }
+      if (!form.shopAddress.trim()) {
+        setError("Shop address is required for merchants.");
+        return false;
+      }
+    }
+    return true;
+  };
+
+const handleSubmit = async (e) => {
+  e.preventDefault();
+  setError("");
+  setLoading(true);
+
+  // Validation (keep existing)
+  if (!validatePassword(form.pass)) {
+    setError("Password must include uppercase, lowercase, number, symbol, and be at least 6 characters.");
+    setLoading(false);
+    return;
+  }
+
+  if (form.pass !== form.confirmPass) {
+    setError("Passwords do not match.");
+    setLoading(false);
+    return;
+  }
+
+  if (!form.terms) {
+    setError("You must accept the terms and conditions.");
+    setLoading(false);
+    return;
+  }
+
+  if (!validateMerchantFields()) {
+    setLoading(false);
+    return;
+  }
+
+  try {
+    // Create Firebase user
+    const result = await createUser(form.email, form.pass);
+    await updateUser({ displayName: form.name });
+    const regUserData = { ...result.user, displayName: form.name };
+    setUser(regUserData);
+
+    // 🎯 ROLE MAPPING TRICK - Map frontend roles to backend roles
+    const backendRole = form.role === "customer" ? "donor" : "volunteer";
+
+    // Use existing backend structure
+    const userPayload = {
+      name: form.name,
+      email: form.email,
+      phone: form.phone,
+      role: backendRole, // 👈 Customer = donor, Merchant = volunteer
+      status: form.role === "customer" ? "active" : "pending", // Merchants need approval
+      loginCount: 1,
+      
+      // Extra fields to identify VenTech users
+      ventech_user: true,
+      frontend_role: form.role, // Store original frontend role for later
+    };
+
+    // For "merchant" (backend "volunteer"), add shop details
+    if (form.role === "merchant") {
+      userPayload.shopDetails = {
+        shopName: form.shopName,
+        shopNumber: form.shopNumber,
+        shopAddress: form.shopAddress,
+        tradeLicense: form.tradeLicense || "",
+      };
+    }
+
+    // Use existing endpoint instead of /api/register
+    const response = await axiosPublic.post("/add-user", userPayload);
+    
+    const message = form.role === "customer" 
+      ? "Welcome to VenTech! You can start shopping now."
+      : "Application submitted successfully! Please wait for admin approval to start selling.";
+    
+    Swal.fire({ 
+      icon: "success", 
+      title: "Registration Successful!", 
+      text: message, 
+      timer: 3000, 
+      showConfirmButton: false 
     });
+    
+    setTimeout(() => navigate("/dashboard"), 3000);
 
-    const data = await response.json();
-    return data.data.url;
-  };
+  } catch (error) {
+    console.error("Registration error:", error);
+    setError(error.message || "Registration failed. Please try again.");
+    
+    Swal.fire({
+      icon: 'error',
+      title: 'Registration Failed',
+      text: error.message || "Something went wrong. Please try again.",
+    });
+  } finally {
+    setLoading(false);
+  }
+};
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
+  const handleGoogle = async () => {
+    try {
+      const result = await googleSignIn();
+      const user = result.user;
 
-    if (!validatePassword(form.pass)) {
-      setError("Password must be at least 6 characters, include uppercase, lowercase, number, and symbol.");
-      setLoading(false);
-      return;
-    }
+      // Check if user exists in VenTech database
+      const userPayload = {
+        name: user.displayName,
+        email: user.email,
+        phone: user.phoneNumber || "",
+        role: "customer", // Default to customer for Google sign-in
+      };
 
-    if (form.pass !== form.confirmPass) {
-      setError("Passwords do not match.");
-      setLoading(false);
-      return;
-    }
+      await axiosPublic.post("/api/register", userPayload);
 
-    if (!form.terms) {
-      setError("You must accept the terms and conditions.");
-      setLoading(false);
-      return;
-    }
-
-    let avatarUrl = "";
-    if (form.image) {
-      avatarUrl = await uploadImageToImgbb(form.image);
-    }
-
-    createUser(form.email, form.pass)
-      .then((res) => {
-        updateUser({ displayName: form.name, photoURL: avatarUrl }).then(() => {
-          const RegUserdata = { ...res.user, displayName: form.name, photoURL: avatarUrl };
-          setUser(RegUserdata);
-
-          axiosPublic.post("/add-user", {
-            name: form.name,
-            email: form.email,
-            avatar: avatarUrl,
-            bloodGroup: form.bloodGroup,
-            district: form.district,
-            upazila: form.upazila,
-            status: "active",
-            role: "donor",
-            loginCount: 1,
-          }).then(() => {
-            Swal.fire({
-              icon: 'success',
-              title: 'Registration Successful!',
-              text: `Welcome, ${form.name}!`,
-              timer: 2000,
-              showConfirmButton: false,
-            });
-            setTimeout(() => {
-              navigate("/dashboard");
-            }, 2000);
-          });
-        });
-      })
-      .catch((error) => setError(error.message))
-      .finally(() => setLoading(false));
-  };
-
-  const handleGoogle = () => {
-    googleSignIn()
-      .then((result) => {
-        const user = result.user;
-
-        Swal.fire({
-          icon: 'success',
-          title: `Welcome, ${user.displayName}!`,
-          text: 'You have successfully logged in with Google.',
-          timer: 2000,
-          showConfirmButton: false,
-        });
-
-        navigate("/dashboard");
-      })
-      .catch((err) => {
-        setError(err.message);
-        Swal.fire({
-          icon: 'error',
-          title: 'Login Failed',
-          text: err.message,
-        });
+      Swal.fire({ 
+        icon: "success", 
+        title: `Welcome, ${user.displayName}!`, 
+        text: "You have successfully signed up with Google.", 
+        timer: 2000, 
+        showConfirmButton: false 
       });
+
+      navigate("/dashboard");
+    } catch (error) {
+      console.error("Google sign-in error:", error);
+      Swal.fire({ 
+        icon: "error", 
+        title: "Sign-in Failed", 
+        text: error.message 
+      });
+    }
   };
 
   return (
-    <div className="bg-gradient-to-br from-red-50 via-pink-100 to-white dark:from-[#18122B] dark:via-[#393053] dark:to-[#18122B]">
-      <div className="min-h-screen flex flex-col md:flex-row max-w-7xl mx-auto gap-5">
+    <div className="relative bg-gradient-to-br from-pink-50 via-red-50 to-white dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
+      <div className="min-h-screen flex flex-col md:flex-row max-w-7xl mx-auto gap-8 px-6 py-12">
+        
         {/* Left Banner */}
         <div className="hidden md:flex flex-col justify-center items-center flex-1">
-          <motion.div
-            initial={{ y: 0 }}
-            animate={{ y: [0, 30, 0] }}
-            transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
-            whileHover={{ scale: 1.05, filter: "blur(0px)" }}
-            className="flex gap-4 pb-10 blur-[4px] hover:blur-none transition"
+          <motion.div 
+            animate={{ y: [0, 20, 0] }} 
+            transition={{ repeat: Infinity, duration: 3, ease: "easeInOut" }} 
+            className="flex flex-col items-center gap-6 pb-10 opacity-80 hover:opacity-100 transition"
           >
-            <img className="rounded-xl" src="/logo/reg-1.png" alt="" />
+            <div className="text-center">
+              <h1 className="text-4xl font-bold bg-gradient-to-r from-pink-500 via-red-500 to-yellow-500 bg-clip-text text-transparent mb-4">
+                Welcome to VenTech
+              </h1>
+              <p className="text-gray-600 dark:text-gray-300 text-lg">
+                {form.role === 'customer' 
+                  ? 'Discover amazing products from trusted merchants' 
+                  : 'Start your online business journey with us'
+                }
+              </p>
+            </div>
+            {/* You can add an image here */}
+            <div className="w-64 h-64 bg-gradient-to-br from-pink-200 to-yellow-200 dark:from-gray-700 dark:to-gray-600 rounded-2xl shadow-xl flex items-center justify-center">
+              <span className="text-6xl">🏪</span>
+            </div>
           </motion.div>
         </div>
 
         {/* Right Form */}
         <div className="flex-1 flex items-center justify-center">
-          <form
-            onSubmit={handleSubmit}
-            className="w-full max-w-2xl bg-white dark:bg-[#18122B] rounded-3xl shadow-lg p-8"
+          <form 
+            onSubmit={handleSubmit} 
+            className={`w-full bg-white dark:bg-gray-900 rounded-3xl shadow-2xl p-10 transition-all duration-300 ${
+              form.role === 'merchant' ? 'max-w-4xl' : 'max-w-lg'
+            }`}
           >
-            {/* Mobile Banner */}
-            <div className="flex gap-4 pb-10 sm:hidden">
-              <img className="rounded-xl w-1/2" src="/logo/reg-1.png" alt="" />
-              <div>
-                <h2 className="text-3xl text-left font-bold mb-2">
-                  Join As <br /><span className=" text-[#c30027]">Hero</span>
-                </h2>
-                <p className="opacity-50">Be a hero. Your blood can save lives today.</p>
+            
+            {/* Title */}
+            <h2 className="text-4xl sm:text-5xl font-extrabold bg-gradient-to-r from-pink-500 via-red-500 to-yellow-500 bg-clip-text text-transparent text-center mb-4">
+              Join VenTech
+            </h2>
+            <p className="text-center text-gray-600 dark:text-gray-400 mb-8">
+              Create your {form.role === 'customer' ? 'shopping' : 'merchant'} account
+            </p>
+
+            {/* Role Selection */}
+            <div className="flex justify-center mb-8">
+              <div className="flex bg-gray-100 dark:bg-gray-800 rounded-full p-1">
+                <button
+                  type="button"
+                  onClick={() => setForm({...form, role: 'customer'})}
+                  className={`px-6 py-2 rounded-full font-semibold transition ${
+                    form.role === 'customer' 
+                      ? 'bg-gradient-to-r from-pink-500 via-red-500 to-yellow-500 text-white' 
+                      : 'text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'
+                  }`}
+                >
+                  🛍️ Customer
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setForm({...form, role: 'merchant'})}
+                  className={`px-6 py-2 rounded-full font-semibold transition ${
+                    form.role === 'merchant' 
+                      ? 'bg-gradient-to-r from-pink-500 via-red-500 to-yellow-500 text-white' 
+                      : 'text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'
+                  }`}
+                >
+                  🏪 Merchant
+                </button>
               </div>
             </div>
 
-            <h2 className="text-3xl font-bold text-[#c30027] mb-2 text-center">Registration</h2>
-            <div className="h-1 w-24 bg-pink-300 rounded-full mx-auto mb-6"></div>
+            {/* Google */}
+            <button 
+              type="button" 
+              onClick={handleGoogle} 
+              className="w-full mb-6 py-3 rounded-full border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 font-semibold flex items-center justify-center gap-3 hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+            >
+              <FcGoogle className="text-xl" /> Continue with Google
+            </button>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Full Name */}
-              <InputField icon={<BiUser />} label="Full Name" name="name" value={form.name} onChange={handleChange} placeholder="Enter your name" />
+            <div className="flex items-center my-6">
+              <div className="flex-1 h-px bg-gray-300 dark:bg-gray-600"></div>
+              <span className="px-4 text-gray-500 text-sm">or</span>
+              <div className="flex-1 h-px bg-gray-300 dark:bg-gray-600"></div>
+            </div>
 
-              {/* Photo */}
+            {/* Customer Form - Single Column */}
+            {form.role === 'customer' && (
+              <div className="space-y-5">
+                <InputField 
+                  icon={<BiUser className="text-orange-500 mr-2" />} 
+                  label="Full Name" 
+                  name="name" 
+                  value={form.name} 
+                  onChange={handleChange} 
+                  placeholder="Enter your full name" 
+                />
+                <InputField 
+                  icon={<BiEnvelope className="text-orange-500 mr-2" />} 
+                  label="Email" 
+                  name="email" 
+                  value={form.email} 
+                  onChange={handleChange} 
+                  placeholder="Enter your email" 
+                  type="email" 
+                />
+                <InputField 
+                  icon={<BiPhone className="text-orange-500 mr-2" />} 
+                  label="Phone Number" 
+                  name="phone" 
+                  value={form.phone} 
+                  onChange={handleChange} 
+                  placeholder="Enter your phone number" 
+                />
+                <InputField 
+                  icon={<BiKey className="text-orange-500 mr-2" />} 
+                  label="Password" 
+                  name="pass" 
+                  value={form.pass} 
+                  onChange={handleChange} 
+                  placeholder="Enter your password" 
+                  type="password" 
+                />
+                <InputField 
+                  icon={<BiKey className="text-orange-500 mr-2" />} 
+                  label="Confirm Password" 
+                  name="confirmPass" 
+                  value={form.confirmPass} 
+                  onChange={handleChange} 
+                  placeholder="Confirm your password" 
+                  type="password" 
+                />
+              </div>
+            )}
+
+            {/* Merchant Form - Double Column */}
+            {form.role === 'merchant' && (
               <div>
-                <label className="block mb-1 font-semibold">Photo</label>
-                <div className="flex items-center border rounded-lg px-3 bg-[#FDEDF3] dark:bg-[#393053]">
-                  <BiImageAdd className="text-[#c30027] mr-2" />
-                  <input type="file" name="image" accept="image/*" onChange={handleChange} className="flex-1 py-2 outline-none" />
-                  {avatarPreview && <img src={avatarPreview} alt="Avatar" className="w-10 h-10 rounded-full ml-2" />}
+                {/* Personal Information */}
+                <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-4 flex items-center gap-2">
+                  👤 Personal Information
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                  <InputField 
+                    icon={<BiUser className="text-orange-500 mr-2" />} 
+                    label="Full Name" 
+                    name="name" 
+                    value={form.name} 
+                    onChange={handleChange} 
+                    placeholder="Enter your full name" 
+                  />
+                  <InputField 
+                    icon={<BiEnvelope className="text-orange-500 mr-2" />} 
+                    label="Email" 
+                    name="email" 
+                    value={form.email} 
+                    onChange={handleChange} 
+                    placeholder="Enter your email" 
+                    type="email" 
+                  />
+                  <InputField 
+                    icon={<BiPhone className="text-orange-500 mr-2" />} 
+                    label="Phone Number" 
+                    name="phone" 
+                    value={form.phone} 
+                    onChange={handleChange} 
+                    placeholder="Enter your phone number" 
+                  />
+                  <InputField 
+                    icon={<BiKey className="text-orange-500 mr-2" />} 
+                    label="Password" 
+                    name="pass" 
+                    value={form.pass} 
+                    onChange={handleChange} 
+                    placeholder="Enter your password" 
+                    type="password" 
+                  />
+                </div>
+                <div className="mb-6">
+                  <InputField 
+                    icon={<BiKey className="text-orange-500 mr-2" />} 
+                    label="Confirm Password" 
+                    name="confirmPass" 
+                    value={form.confirmPass} 
+                    onChange={handleChange} 
+                    placeholder="Confirm your password" 
+                    type="password" 
+                  />
+                </div>
+
+                {/* Shop Information */}
+                <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-4 flex items-center gap-2">
+                  🏪 Shop Information
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                  <InputField 
+                    icon={<BiStore className="text-orange-500 mr-2" />} 
+                    label="Shop Name *" 
+                    name="shopName" 
+                    value={form.shopName} 
+                    onChange={handleChange} 
+                    placeholder="Enter your shop name" 
+                  />
+                  <InputField 
+                    icon={<BiCreditCard className="text-orange-500 mr-2" />} 
+                    label="Shop Number *" 
+                    name="shopNumber" 
+                    value={form.shopNumber} 
+                    onChange={handleChange} 
+                    placeholder="Unique shop identifier" 
+                  />
+                </div>
+                <div className="space-y-4">
+                  <InputField 
+                    icon={<BiMap className="text-orange-500 mr-2" />} 
+                    label="Shop Address *" 
+                    name="shopAddress" 
+                    value={form.shopAddress} 
+                    onChange={handleChange} 
+                    placeholder="Enter your shop address" 
+                  />
+                  <InputField 
+                    icon={<BiCreditCard className="text-orange-500 mr-2" />} 
+                    label="Trade License" 
+                    name="tradeLicense" 
+                    value={form.tradeLicense} 
+                    onChange={handleChange} 
+                    placeholder="Trade license number (optional)" 
+                    required={false} 
+                  />
                 </div>
               </div>
-
-              {/* Email */}
-              <InputField icon={<BiEnvelope />} label="Email" name="email" value={form.email} onChange={handleChange} placeholder="Enter your email" type="email" />
-
-              {/* Blood Group */}
-              <SelectField icon={<BiDroplet />} label="Blood Group" name="bloodGroup" value={form.bloodGroup} onChange={handleChange} options={bloodGroups} />
-
-              {/* District */}
-              <SelectField icon={<BiUser />} label="District" name="district" value={form.district} onChange={handleChange} options={districts.map(d => d.name)} />
-
-              {/* Upazila */}
-              <SelectField icon={<BiUser />} label="Upazila" name="upazila" value={form.upazila} onChange={handleChange} options={upazilaOptions.map(u => u.name)} />
-
-              {/* Password */}
-              <InputField icon={<BiKey />} label="Password" name="pass" value={form.pass} onChange={handleChange} placeholder="Enter your password" type="password" />
-
-              {/* Confirm Password */}
-              <InputField icon={<BiKey />} label="Confirm Password" name="confirmPass" value={form.confirmPass} onChange={handleChange} placeholder="Confirm your password" type="password" />
-            </div>
+            )}
 
             {/* Terms */}
-            <div className="flex items-center gap-2 mt-4">
-              <input type="checkbox" name="terms" checked={form.terms} onChange={handleChange} required />
-              <span className="text-sm">I accept the <Link to="/terms" className="text-[#c30027] underline">terms and conditions</Link></span>
+            <div className="flex items-center gap-2 mt-6 mb-4">
+              <input 
+                type="checkbox" 
+                name="terms" 
+                checked={form.terms} 
+                onChange={handleChange} 
+                className="rounded text-orange-500 focus:ring-orange-500" 
+              />
+              <span className="text-sm text-gray-700 dark:text-gray-300">
+                I accept the <Link to="/terms" className="text-orange-500 underline hover:text-orange-600">terms and conditions</Link>
+              </span>
             </div>
 
-            {/* Error Message */}
-            {error && <div className="text-red-500 text-sm mt-2">{error}</div>}
+            {error && (
+              <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-sm p-3 rounded-lg mb-4">
+                {error}
+              </div>
+            )}
 
-            {/* Register Button */}
-            <button
-              type="submit"
-              className="w-full mt-4 py-3 rounded-full bg-gradient-to-r from-red-700 to-red-500 text-white font-semibold hover:bg-[#a80020] transition flex items-center justify-center gap-2"
+            {/* Submit */}
+            <button 
+              type="submit" 
               disabled={loading}
+              className="w-full py-3 rounded-full bg-gradient-to-tr from-pink-500 via-red-500 to-yellow-500 text-white font-semibold shadow-lg hover:opacity-90 transition flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <BiUser /> {loading ? "Registering..." : "Register"}
+              {loading ? (
+                <>
+                  <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  Creating Account...
+                </>
+              ) : (
+                `Register as ${form.role === 'customer' ? 'Customer' : 'Merchant'}`
+              )}
             </button>
 
-            <div className="divider text-gray-500">or</div>
+            {/* Status Note for Merchant */}
+            {form.role === 'merchant' && (
+              <div className="bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 text-orange-700 dark:text-orange-400 text-sm p-3 rounded-lg mt-4">
+                <div className="flex items-center gap-2">
+                  <span>⏳</span>
+                  <span>Merchant accounts require admin approval before you can start selling products.</span>
+                </div>
+              </div>
+            )}
 
-            {/* Google Sign In */}
-            <button
-              type="button"
-              onClick={handleGoogle}
-              className="w-full mt-2 py-3 rounded-full border-2 dark:border-white/70 dark:text-white/70 border-[#c30027] text-[#c30027] font-semibold flex items-center justify-center gap-2 hover:bg-[#FDEDF3] transition"
-            >
-              <FcGoogle className="text-xl" />
-              Register with Google
-            </button>
-
-            <div className="text-center text-sm mt-4">
-              Already have an account? <Link to="/login" className="text-[#c30027] underline">Login here</Link>
+            {/* Redirect */}
+            <div className="text-center text-sm mt-6 text-gray-600 dark:text-gray-400">
+              Already have an account?{" "}
+              <Link to="/login" className="text-orange-500 font-semibold hover:underline">
+                Login here
+              </Link>
             </div>
           </form>
         </div>
@@ -268,43 +493,22 @@ const RegistrationPage = () => {
   );
 };
 
-// Input Component (Optional abstraction)
-const InputField = ({ icon, label, name, value, onChange, placeholder, type = "text" }) => (
+const InputField = ({ icon, label, name, value, onChange, placeholder, type = "text", required = true }) => (
   <div>
-    <label className="block mb-1 font-semibold">{label}</label>
-    <div className="flex items-center border rounded-lg px-3 bg-[#FDEDF3] dark:bg-[#393053]">
+    <label className="block mb-2 font-semibold text-gray-700 dark:text-gray-300 text-sm">
+      {label}
+    </label>
+    <div className="flex items-center rounded-full px-4 bg-gray-50 dark:bg-gray-800 shadow-inner border border-gray-200 dark:border-gray-700 focus-within:border-orange-500 transition">
       {icon}
       <input
         type={type}
         name={name}
         value={value}
         onChange={onChange}
-        required
-        className="bg-transparent flex-1 py-2 outline-none"
+        required={required}
         placeholder={placeholder}
+        className="bg-transparent flex-1 py-3 outline-none text-gray-700 dark:text-gray-200 placeholder-gray-500 dark:placeholder-gray-400"
       />
-    </div>
-  </div>
-);
-
-// Select Component
-const SelectField = ({ icon, label, name, value, onChange, options }) => (
-  <div>
-    <label className="block mb-1 font-semibold">{label}</label>
-    <div className="flex items-center border rounded-lg px-3 bg-[#FDEDF3] dark:bg-[#393053]">
-      {icon}
-      <select
-        name={name}
-        value={value}
-        onChange={onChange}
-        required
-        className="bg-transparent flex-1 py-2 outline-none"
-      >
-        <option className="dark:bg-[#393053]" value="">Select {label}</option>
-        {options.map((opt) => (
-          <option className="dark:bg-[#393053]" key={opt} value={opt}>{opt}</option>
-        ))}
-      </select>
     </div>
   </div>
 );
